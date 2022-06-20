@@ -126,7 +126,7 @@ sendPreparedParametricStatement connection registry integerDatetimes template (P
         in foldr step ([], []) (encoderOp input)
     in runExceptT $ do
       key <- ExceptT $ getPreparedStatementKey connection registry template oidList
-      ExceptT $ checkedSend connection $ LibPQ.sendQueryPrepared connection key valueAndFormatList LibPQ.Binary
+      ExceptT $ checkedSend connection $ LibPQ.sendQueryPreparedC connection key valueAndFormatList LibPQ.Binary
 
 {-# INLINE sendUnpreparedParametricStatement #-}
 sendUnpreparedParametricStatement ::
@@ -143,7 +143,7 @@ sendUnpreparedParametricStatement connection integerDatetimes template (ParamsEn
         step (oid, format, encoder, _) acc =
           ((,,) <$> pure oid <*> encoder integerDatetimes <*> pure format) : acc
         in foldr step [] (encoderOp input)
-    in checkedSend connection $ LibPQ.sendQueryParams connection template params LibPQ.Binary
+    in checkedSend connection $ LibPQ.sendQueryParamsC connection template params LibPQ.Binary
 
 {-# INLINE sendParametricStatement #-}
 sendParametricStatement ::

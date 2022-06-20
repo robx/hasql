@@ -25,7 +25,7 @@ nullableValue (C.Value valueOID arrayOID encode render) =
     D.OID _ pqOid format =
       valueOID
     encoder env =
-      fmap (B.encodingBytes . encode env) input
+      fmap (B.encodingCString . encode env) input
     rendering =
       maybe "null" (E.run . render) input
     in pure (pqOid, format, encoder, rendering)
