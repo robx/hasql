@@ -36,6 +36,7 @@ module Hasql.Encoders
     inet,
     json,
     jsonBytes,
+    jsonBytesLazy,
     jsonb,
     jsonbBytes,
     enum,
