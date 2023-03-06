@@ -27,6 +27,13 @@ noResult =
     LibPQ.TuplesOk -> True
     _ -> False
 
+{-# INLINE pipelineSync #-}
+pipelineSync :: Result ()
+pipelineSync =
+  checkExecStatus $ \case
+    LibPQ.PipelineSync -> True
+    _ -> False
+
 {-# INLINE rowsAffected #-}
 rowsAffected :: Result Int64
 rowsAffected =

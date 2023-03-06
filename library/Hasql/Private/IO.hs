@@ -36,6 +36,25 @@ checkConnectionStatus c =
       LibPQ.ConnectionOk -> return Nothing
       _ -> fmap Just (LibPQ.errorMessage c)
 
+ensureNonblocking :: LibPQ.Connection -> IO ()
+ensureNonblocking conn = do
+  s <- LibPQ.isnonblocking conn
+  putStrLn $ "connection isnonblocking: " <> show s
+
+ensurePipelineMode :: LibPQ.Connection -> IO ()
+ensurePipelineMode = void . LibPQ.enterPipelineMode
+
+exitPipelineMode :: LibPQ.Connection -> IO ()
+exitPipelineMode = void . LibPQ.exitPipelineMode
+
+syncPipeline :: LibPQ.Connection -> IO ()
+syncPipeline = void . LibPQ.pipelineSync
+
+getSyncPipelineResult :: LibPQ.Connection -> IO (Either CommandError ())
+getSyncPipelineResult c = getResults c (error "integerdatetimes undef")
+                              (ResultsDecoders.single ResultDecoders.pipelineSync)
+
+
 {-# INLINE checkServerVersion #-}
 checkServerVersion :: LibPQ.Connection -> IO (Maybe Int)
 checkServerVersion c =
@@ -140,6 +159,23 @@ sendUnpreparedParametricStatement connection integerDatetimes template (ParamsEn
               ((,,) <$> pure oid <*> encoder integerDatetimes <*> pure format) : acc
          in foldr step [] (encoderOp input)
    in checkedSend connection $ LibPQ.sendQueryParams connection template params LibPQ.Binary
+
+{-# INLINE prepareParametricStatement #-}
+prepareParametricStatement ::
+  LibPQ.Connection ->
+  Bool ->
+  PreparedStatementRegistry.PreparedStatementRegistry ->
+  ByteString ->
+  ParamsEncoders.Params a ->
+  Bool ->
+  a ->
+  IO (Either CommandError ())
+prepareParametricStatement connection integerDatetimes registry template (ParamsEncoders.Params (Op encoderOp)) prepared params =
+  if prepared
+    then let oidList = toList . fmap (\(oid, _, _, _) -> oid) $ (encoderOp params) in do
+               res <- getPreparedStatementKey connection registry template oidList
+               return $ const () <$> res
+    else return (Right ())
 
 {-# INLINE sendParametricStatement #-}
 sendParametricStatement ::
