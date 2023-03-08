@@ -11,7 +11,7 @@ import qualified Hasql.Private.Settings as Settings
 -- |
 -- A single connection to the database.
 data Connection
-  = Connection !(MVar LibPQ.Connection) !Bool !PreparedStatementRegistry.PreparedStatementRegistry
+  = Connection !(MVar IO.PConnection) !Bool !PreparedStatementRegistry.PreparedStatementRegistry
 
 -- |
 -- Possible details of the connection acquistion error.
@@ -37,14 +37,15 @@ acquire settings =
 release :: Connection -> IO ()
 release (Connection pqConnectionRef _ _) =
   mask_ $ do
-    nullConnection <- LibPQ.newNullConnection
-    pqConnection <- swapMVar pqConnectionRef nullConnection
-    IO.releaseConnection pqConnection
+    nullConnection <- IO.newNullConnection
+    oldConnection <- swapMVar pqConnectionRef nullConnection
+    IO.releaseConnection oldConnection
 
 -- |
 -- Execute an operation on the raw @libpq@ 'LibPQ.Connection'.
 --
 -- The access to the connection is exclusive.
+-- Unsafe with pipeline mode.
 withLibPQConnection :: Connection -> (LibPQ.Connection -> IO a) -> IO a
-withLibPQConnection (Connection pqConnectionRef _ _) =
-  withMVar pqConnectionRef
+withLibPQConnection (Connection pqConnectionRef _ _) f =
+  withMVar pqConnectionRef (f . IO.pcConn)

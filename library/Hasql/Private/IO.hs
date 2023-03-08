@@ -5,6 +5,7 @@ module Hasql.Private.IO where
 import qualified Data.DList as DList
 import qualified Database.PostgreSQL.LibPQ as LibPQ
 import qualified Hasql.Private.Commands as Commands
+import qualified Hasql.Private.Decoders as Decoders
 import qualified Hasql.Private.Decoders.Result as ResultDecoders
 import qualified Hasql.Private.Decoders.Results as ResultsDecoders
 import qualified Hasql.Private.Encoders.Params as ParamsEncoders
@@ -12,10 +13,46 @@ import Hasql.Private.Errors
 import Hasql.Private.Prelude
 import qualified Hasql.Private.PreparedStatementRegistry as PreparedStatementRegistry
 
+data Pipeline = PipelineOff | PipelineQueued Int
+
+data PConnection
+  = PConnection { pcConn :: !LibPQ.Connection, pcOutstanding :: !(IORef Pipeline) }
+
+{-# INLINE startPipeline #-}
+startPipeline :: PConnection -> IO ()
+startPipeline (PConnection conn outstanding) = do
+  lg "startPipeline"
+  r <- LibPQ.enterPipelineMode conn -- fixme check result
+  lg $ "success: " <> show r
+  writeIORef outstanding $ PipelineQueued 0 -- fixme assert state
+
+{-# INLINE bumpPipeline #-}
+bumpPipeline :: PConnection -> IO ()
+bumpPipeline (PConnection _ outstanding) = do
+  lg "bumpPipeline"
+  modifyIORef outstanding
+    (\p -> case p of PipelineOff -> PipelineOff
+                     PipelineQueued n -> PipelineQueued $ n + 1)
+
+stopPipeline :: PConnection -> IO ()
+stopPipeline (PConnection conn pipeline) = do
+  lg "stopPipeline"
+  p <- readIORef pipeline
+  case p of
+    PipelineOff -> do
+      lg "already off!"
+    PipelineQueued n -> do
+      lg $ "outstanding (should be 0): " <> show n
+  writeIORef pipeline PipelineOff
+  exitPipelineMode conn
+
+{-# INLINE newNullConnection #-}
+newNullConnection :: IO PConnection
+newNullConnection = PConnection <$> LibPQ.newNullConnection <*> newIORef PipelineOff
+
 {-# INLINE acquireConnection #-}
-acquireConnection :: ByteString -> IO LibPQ.Connection
-acquireConnection =
-  LibPQ.connectdb
+acquireConnection :: ByteString -> IO PConnection
+acquireConnection s = PConnection <$> LibPQ.connectdb s <*> newIORef PipelineOff
 
 {-# INLINE acquirePreparedStatementRegistry #-}
 acquirePreparedStatementRegistry :: IO PreparedStatementRegistry.PreparedStatementRegistry
@@ -23,37 +60,34 @@ acquirePreparedStatementRegistry =
   PreparedStatementRegistry.new
 
 {-# INLINE releaseConnection #-}
-releaseConnection :: LibPQ.Connection -> IO ()
-releaseConnection connection =
+releaseConnection :: PConnection -> IO ()
+releaseConnection (PConnection connection _) =
   LibPQ.finish connection
 
 {-# INLINE checkConnectionStatus #-}
-checkConnectionStatus :: LibPQ.Connection -> IO (Maybe (Maybe ByteString))
-checkConnectionStatus c =
+checkConnectionStatus :: PConnection -> IO (Maybe (Maybe ByteString))
+checkConnectionStatus (PConnection c _) =
   do
     s <- LibPQ.status c
     case s of
       LibPQ.ConnectionOk -> return Nothing
       _ -> fmap Just (LibPQ.errorMessage c)
 
-ensureNonblocking :: LibPQ.Connection -> IO ()
-ensureNonblocking conn = do
+ensureNonblocking :: PConnection -> IO ()
+ensureNonblocking (PConnection conn _) = do
   s <- LibPQ.isnonblocking conn
-  putStrLn $ "connection isnonblocking: " <> show s
-
-ensurePipelineMode :: LibPQ.Connection -> IO ()
-ensurePipelineMode = void . LibPQ.enterPipelineMode
+  lg $ "connection isnonblocking: " <> show s
+  r <- LibPQ.setnonblocking conn True
+  lg $ "set nonblocking: " <> show r
 
 exitPipelineMode :: LibPQ.Connection -> IO ()
 exitPipelineMode = void . LibPQ.exitPipelineMode
 
 syncPipeline :: LibPQ.Connection -> IO ()
-syncPipeline = void . LibPQ.pipelineSync
-
-getSyncPipelineResult :: LibPQ.Connection -> IO (Either CommandError ())
-getSyncPipelineResult c = getResults c (error "integerdatetimes undef")
-                              (ResultsDecoders.single ResultDecoders.pipelineSync)
-
+syncPipeline c = do
+  lg "syncing pipeline"
+  r <- LibPQ.pipelineSync c
+  lg $ "success: " <> show r
 
 {-# INLINE checkServerVersion #-}
 checkServerVersion :: LibPQ.Connection -> IO (Maybe Int)
@@ -61,8 +95,8 @@ checkServerVersion c =
   fmap (mfilter (< 80200) . Just) (LibPQ.serverVersion c)
 
 {-# INLINE getIntegerDatetimes #-}
-getIntegerDatetimes :: LibPQ.Connection -> IO Bool
-getIntegerDatetimes c =
+getIntegerDatetimes :: PConnection -> IO Bool
+getIntegerDatetimes (PConnection c _) =
   fmap decodeValue $ LibPQ.parameterStatus c "integer_datetimes"
   where
     decodeValue =
@@ -71,24 +105,62 @@ getIntegerDatetimes c =
         _ -> False
 
 {-# INLINE initConnection #-}
-initConnection :: LibPQ.Connection -> IO ()
-initConnection c =
+initConnection :: PConnection -> IO ()
+initConnection (PConnection c _) =
   void $ LibPQ.exec c (Commands.asBytes (Commands.setEncodersToUTF8 <> Commands.setMinClientMessagesToWarning))
 
+{-
+lg = putStrLn
+lgl r = case r of Left e -> lg $ "error: " <> show e
+                  _ -> lg "success"
+-}
+
+lg = const $ pure ()
+lgl = const $ pure ()
+
 {-# INLINE getResults #-}
-getResults :: LibPQ.Connection -> Bool -> ResultsDecoders.Results a -> IO (Either CommandError a)
-getResults connection integerDatetimes decoder =
-  {-# SCC "getResults" #-}
-  (<*) <$> get <*> dropRemainders
+getResults :: PConnection -> Bool -> ResultsDecoders.Results a -> IO (Either CommandError a)
+getResults (PConnection pqConnection pipeline) integerDatetimes decoder = do
+  p <- readIORef pipeline
+  case p of
+    PipelineQueued nOutstanding -> do
+      syncPipeline pqConnection
+      lg $ "collecting " <> show nOutstanding <> " queued results"
+      forM_ [2..nOutstanding] $ \_ -> do
+         lg "getting queued result"
+         r <- ResultsDecoders.run (unsafeCoerce Decoders.noResult) (integerDatetimes, pqConnection)
+         lgl r
+         r2 <- dropRemainders
+         lgl r2
+    PipelineOff -> return ()
+
+  lg "getting actual result"
+  r1 <- get
+  lgl r1
+  r2 <- dropRemainders
+  lgl r2
+  case p of
+    PipelineQueued _ -> do
+      lg $ "getting sync result"
+      r3 <- ResultsDecoders.run (ResultsDecoders.single ResultDecoders.pipelineSync) (integerDatetimes, pqConnection)
+      lg $ show r3
+      writeIORef pipeline $ PipelineQueued 0
+    _ -> return ()
+  return $ r1 <* r2
   where
     get =
-      ResultsDecoders.run decoder (integerDatetimes, connection)
+      ResultsDecoders.run decoder (integerDatetimes, pqConnection)
     dropRemainders =
-      ResultsDecoders.run ResultsDecoders.dropRemainders (integerDatetimes, connection)
+      ResultsDecoders.run ResultsDecoders.dropRemainders (integerDatetimes, pqConnection)
+
+sendPrepare connection key template oids = do
+  lg "sendPrepare"
+  bumpPipeline connection
+  LibPQ.sendPrepare (pcConn connection) key template oids
 
 {-# INLINE getPreparedStatementKey #-}
 getPreparedStatementKey ::
-  LibPQ.Connection ->
+  PConnection ->
   PreparedStatementRegistry.PreparedStatementRegistry ->
   ByteString ->
   [LibPQ.Oid] ->
@@ -104,7 +176,7 @@ getPreparedStatementKey connection registry template oidList =
           map (\(LibPQ.Oid x) -> fromIntegral x) oidList
     onNewRemoteKey key =
       do
-        sent <- LibPQ.sendPrepare connection key template (mfilter (not . null) (Just oidList))
+        sent <- sendPrepare connection key template (mfilter (not . null) (Just oidList))
         let resultsDecoder =
               if sent
                 then ResultsDecoders.single ResultDecoders.noResult
@@ -119,15 +191,16 @@ getPreparedStatementKey connection registry template oidList =
       pure (pure key)
 
 {-# INLINE checkedSend #-}
-checkedSend :: LibPQ.Connection -> IO Bool -> IO (Either CommandError ())
-checkedSend connection send =
+checkedSend :: PConnection -> IO Bool -> IO (Either CommandError ())
+checkedSend connection send = do
+  bumpPipeline connection
   send >>= \case
-    False -> fmap (Left . ClientError) $ LibPQ.errorMessage connection
+    False -> fmap (Left . ClientError) $ LibPQ.errorMessage (pcConn connection)
     True -> pure (Right ())
 
 {-# INLINE sendPreparedParametricStatement #-}
 sendPreparedParametricStatement ::
-  LibPQ.Connection ->
+  PConnection ->
   PreparedStatementRegistry.PreparedStatementRegistry ->
   Bool ->
   ByteString ->
@@ -143,11 +216,11 @@ sendPreparedParametricStatement connection registry integerDatetimes template (P
          in foldr step ([], []) (encoderOp input)
    in runExceptT $ do
         key <- ExceptT $ getPreparedStatementKey connection registry template oidList
-        ExceptT $ checkedSend connection $ LibPQ.sendQueryPrepared connection key valueAndFormatList LibPQ.Binary
+        ExceptT $ checkedSend connection $ LibPQ.sendQueryPrepared (pcConn connection) key valueAndFormatList LibPQ.Binary
 
 {-# INLINE sendUnpreparedParametricStatement #-}
 sendUnpreparedParametricStatement ::
-  LibPQ.Connection ->
+  PConnection ->
   Bool ->
   ByteString ->
   ParamsEncoders.Params a ->
@@ -158,28 +231,11 @@ sendUnpreparedParametricStatement connection integerDatetimes template (ParamsEn
         let step (oid, format, encoder, _) acc =
               ((,,) <$> pure oid <*> encoder integerDatetimes <*> pure format) : acc
          in foldr step [] (encoderOp input)
-   in checkedSend connection $ LibPQ.sendQueryParams connection template params LibPQ.Binary
-
-{-# INLINE prepareParametricStatement #-}
-prepareParametricStatement ::
-  LibPQ.Connection ->
-  Bool ->
-  PreparedStatementRegistry.PreparedStatementRegistry ->
-  ByteString ->
-  ParamsEncoders.Params a ->
-  Bool ->
-  a ->
-  IO (Either CommandError ())
-prepareParametricStatement connection integerDatetimes registry template (ParamsEncoders.Params (Op encoderOp)) prepared params =
-  if prepared
-    then let oidList = toList . fmap (\(oid, _, _, _) -> oid) $ (encoderOp params) in do
-               res <- getPreparedStatementKey connection registry template oidList
-               return $ const () <$> res
-    else return (Right ())
+   in checkedSend connection $ LibPQ.sendQueryParams (pcConn connection) template params LibPQ.Binary
 
 {-# INLINE sendParametricStatement #-}
 sendParametricStatement ::
-  LibPQ.Connection ->
+  PConnection ->
   Bool ->
   PreparedStatementRegistry.PreparedStatementRegistry ->
   ByteString ->
@@ -194,6 +250,6 @@ sendParametricStatement connection integerDatetimes registry template encoder pr
     else sendUnpreparedParametricStatement connection integerDatetimes template encoder params
 
 {-# INLINE sendNonparametricStatement #-}
-sendNonparametricStatement :: LibPQ.Connection -> ByteString -> IO (Either CommandError ())
+sendNonparametricStatement :: PConnection -> ByteString -> IO (Either CommandError ())
 sendNonparametricStatement connection sql =
-  checkedSend connection $ LibPQ.sendQuery connection sql
+  checkedSend connection $ LibPQ.sendQuery (pcConn connection) sql

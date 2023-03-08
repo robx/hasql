@@ -2,9 +2,7 @@ module Hasql.Session
   ( Session,
     sql,
     statement,
-    prepareStatement,
     queuePipelineStatement,
-    finalPipelineStatement,
 
     -- * Execution
     run,
