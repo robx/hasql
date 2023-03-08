@@ -73,6 +73,28 @@ tree =
            in do
                 x <- Connection.with (Session.run session)
                 assertEqual (show x) (Right (Right (True, False))) x,
+        testCase "pipeline" $
+          let statement =
+                Statement.Statement "select true where 1 = any ($1)" encoder decoder True
+                where
+                  encoder =
+                    Encoders.param (Encoders.nonNullable (Encoders.array (Encoders.dimension foldl' (Encoders.element (Encoders.nonNullable Encoders.int8)))))
+                  decoder =
+                    fmap (maybe False (const True)) (Decoders.rowMaybe ((Decoders.column . Decoders.nonNullable) Decoders.bool))
+              statement' =
+                Statement.Statement "select true where 1 = any ($1)" encoder decoder True
+                where
+                  encoder =
+                    Encoders.param (Encoders.nonNullable (Encoders.array (Encoders.dimension foldl' (Encoders.element (Encoders.nonNullable Encoders.int8)))))
+                  decoder = Decoders.noResult
+              session =
+                do
+                  Session.queuePipelineStatement [1, 2] statement'
+                  result2 <- Session.statement [2, 3] statement
+                  return result2
+           in do
+                x <- Connection.with (Session.run session)
+                assertEqual (show x) (Right (Right False)) x,
         testCase "NOT IN simulation" $
           let statement =
                 Statement.Statement "select true where 3 <> all ($1)" encoder decoder True
