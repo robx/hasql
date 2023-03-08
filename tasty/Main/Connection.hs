@@ -17,7 +17,7 @@ with handler =
           where
             host = "localhost"
             port = 5432
-            user = "postgres"
+            user = "rob"
             password = ""
             database = "postgres"
     use connection =
