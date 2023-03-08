@@ -57,10 +57,7 @@ queuePipelineStatement input (Statement.Statement template (Encoders.Params para
       ExceptT $
         fmap (mapLeft (QueryError template inputReps)) $
           withMVar pqConnectionRef $ \pqConnection -> do
-            IO.ensureNonblocking pqConnection
-            lg "ensuring pipeline mode"
             IO.startPipeline pqConnection
-            lg "ensured pipeline mode"
             r <- IO.sendParametricStatement pqConnection integerDatetimes registry template paramsEncoder preparable input
             lg "sent statement"
             return r

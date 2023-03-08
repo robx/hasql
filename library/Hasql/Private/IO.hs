@@ -22,9 +22,13 @@ data PConnection
 startPipeline :: PConnection -> IO ()
 startPipeline (PConnection conn outstanding) = do
   lg "startPipeline"
+  rb <- LibPQ.setnonblocking conn True
+  lg $ "set nonblocking: " <> show rb
   r <- LibPQ.enterPipelineMode conn -- fixme check result
-  lg $ "success: " <> show r
-  writeIORef outstanding $ PipelineQueued 0 -- fixme assert state
+  lg $ "startPipeline success: " <> show r
+  modifyIORef outstanding
+    (\p -> case p of PipelineOff -> PipelineQueued 0
+                     _           -> p)
 
 {-# INLINE bumpPipeline #-}
 bumpPipeline :: PConnection -> IO ()
@@ -45,6 +49,8 @@ stopPipeline (PConnection conn pipeline) = do
       lg $ "outstanding (should be 0): " <> show n
   writeIORef pipeline PipelineOff
   exitPipelineMode conn
+  rb <- LibPQ.setnonblocking conn False
+  lg $ "unset nonblocking: " <> show rb
 
 {-# INLINE newNullConnection #-}
 newNullConnection :: IO PConnection
@@ -72,13 +78,6 @@ checkConnectionStatus (PConnection c _) =
     case s of
       LibPQ.ConnectionOk -> return Nothing
       _ -> fmap Just (LibPQ.errorMessage c)
-
-ensureNonblocking :: PConnection -> IO ()
-ensureNonblocking (PConnection conn _) = do
-  s <- LibPQ.isnonblocking conn
-  lg $ "connection isnonblocking: " <> show s
-  r <- LibPQ.setnonblocking conn True
-  lg $ "set nonblocking: " <> show r
 
 exitPipelineMode :: LibPQ.Connection -> IO ()
 exitPipelineMode = void . LibPQ.exitPipelineMode
@@ -109,11 +108,11 @@ initConnection :: PConnection -> IO ()
 initConnection (PConnection c _) =
   void $ LibPQ.exec c (Commands.asBytes (Commands.setEncodersToUTF8 <> Commands.setMinClientMessagesToWarning))
 
-{-
-lg = putStrLn
-lgl r = case r of Left e -> lg $ "error: " <> show e
-                  _ -> lg "success"
--}
+
+--lg = putStrLn
+--lgl r = case r of Left e -> lg $ "error: " <> show e
+--                  _ -> lg "success"
+
 
 lg = const $ pure ()
 lgl = const $ pure ()
