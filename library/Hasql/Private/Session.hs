@@ -44,12 +44,6 @@ sql sql =
     decoder =
       Decoders.Results.single Decoders.Result.noResult
 
-{-
-lg = putStrLn
--}
-
-lg = const $ pure ()
-
 queuePipelineStatement :: params -> Statement.Statement params () -> Session ()
 queuePipelineStatement input (Statement.Statement template (Encoders.Params paramsEncoder) _ preparable) =
   Session $
@@ -57,10 +51,8 @@ queuePipelineStatement input (Statement.Statement template (Encoders.Params para
       ExceptT $
         fmap (mapLeft (QueryError template inputReps)) $
           withMVar pqConnectionRef $ \pqConnection -> do
-            IO.startPipeline pqConnection
-            r <- IO.sendParametricStatement pqConnection integerDatetimes registry template paramsEncoder preparable input
-            lg "sent statement"
-            return r
+            IO.startPipeline pqConnection -- FIXME
+            IO.sendParametricStatement pqConnection integerDatetimes registry template paramsEncoder preparable input
   where
     inputReps =
       let Encoders.Params.Params (Op encoderOp) = paramsEncoder
@@ -75,7 +67,6 @@ statement input (Statement.Statement template (Encoders.Params paramsEncoder) de
       ExceptT $
         fmap (mapLeft (QueryError template inputReps)) $
           withMVar pqConnectionRef $ \pqConnection -> do
-            lg "sending final statement"
             r1 <- IO.sendParametricStatement pqConnection integerDatetimes registry template paramsEncoder preparable input
             r2 <- IO.getResults pqConnection integerDatetimes (unsafeCoerce decoder)
             IO.stopPipeline pqConnection

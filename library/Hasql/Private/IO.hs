@@ -21,11 +21,8 @@ data PConnection
 {-# INLINE startPipeline #-}
 startPipeline :: PConnection -> IO ()
 startPipeline (PConnection conn outstanding) = do
-  lg "startPipeline"
-  rb <- LibPQ.setnonblocking conn True
-  lg $ "set nonblocking: " <> show rb
-  r <- LibPQ.enterPipelineMode conn -- fixme check result
-  lg $ "startPipeline success: " <> show r
+  _rb <- LibPQ.setnonblocking conn True -- FIXME
+  _r <- LibPQ.enterPipelineMode conn -- FIXME
   modifyIORef outstanding
     (\p -> case p of PipelineOff -> PipelineQueued 0
                      _           -> p)
@@ -33,24 +30,17 @@ startPipeline (PConnection conn outstanding) = do
 {-# INLINE bumpPipeline #-}
 bumpPipeline :: PConnection -> IO ()
 bumpPipeline (PConnection _ outstanding) = do
-  lg "bumpPipeline"
   modifyIORef outstanding
     (\p -> case p of PipelineOff -> PipelineOff
                      PipelineQueued n -> PipelineQueued $ n + 1)
 
 stopPipeline :: PConnection -> IO ()
 stopPipeline (PConnection conn pipeline) = do
-  lg "stopPipeline"
-  p <- readIORef pipeline
-  case p of
-    PipelineOff -> do
-      lg "already off!"
-    PipelineQueued n -> do
-      lg $ "outstanding (should be 0): " <> show n
+  _p <- readIORef pipeline -- FIXME
   writeIORef pipeline PipelineOff
-  exitPipelineMode conn
-  rb <- LibPQ.setnonblocking conn False
-  lg $ "unset nonblocking: " <> show rb
+  exitPipelineMode conn -- FIXME
+  _rb <- LibPQ.setnonblocking conn False -- FIXME
+  return ()
 
 {-# INLINE newNullConnection #-}
 newNullConnection :: IO PConnection
@@ -84,9 +74,8 @@ exitPipelineMode = void . LibPQ.exitPipelineMode
 
 syncPipeline :: LibPQ.Connection -> IO ()
 syncPipeline c = do
-  lg "syncing pipeline"
-  r <- LibPQ.pipelineSync c
-  lg $ "success: " <> show r
+  _r <- LibPQ.pipelineSync c -- FIXME
+  return ()
 
 {-# INLINE checkServerVersion #-}
 checkServerVersion :: LibPQ.Connection -> IO (Maybe Int)
@@ -108,15 +97,6 @@ initConnection :: PConnection -> IO ()
 initConnection (PConnection c _) =
   void $ LibPQ.exec c (Commands.asBytes (Commands.setEncodersToUTF8 <> Commands.setMinClientMessagesToWarning))
 
-
---lg = putStrLn
---lgl r = case r of Left e -> lg $ "error: " <> show e
---                  _ -> lg "success"
-
-
-lg = const $ pure ()
-lgl = const $ pure ()
-
 {-# INLINE getResults #-}
 getResults :: PConnection -> Bool -> ResultsDecoders.Results a -> IO (Either CommandError a)
 getResults (PConnection pqConnection pipeline) integerDatetimes decoder = do
@@ -124,25 +104,17 @@ getResults (PConnection pqConnection pipeline) integerDatetimes decoder = do
   case p of
     PipelineQueued nOutstanding -> do
       syncPipeline pqConnection
-      lg $ "collecting " <> show nOutstanding <> " queued results"
       forM_ [2..nOutstanding] $ \_ -> do
-         lg "getting queued result"
-         r <- ResultsDecoders.run (unsafeCoerce Decoders.noResult) (integerDatetimes, pqConnection)
-         lgl r
-         r2 <- dropRemainders
-         lgl r2
+         _r <- ResultsDecoders.run (unsafeCoerce Decoders.noResult) (integerDatetimes, pqConnection) -- FIXME
+         _r2 <- dropRemainders -- FIXME
+         return ()
     PipelineOff -> return ()
 
-  lg "getting actual result"
   r1 <- get
-  lgl r1
   r2 <- dropRemainders
-  lgl r2
   case p of
     PipelineQueued _ -> do
-      lg $ "getting sync result"
-      r3 <- ResultsDecoders.run (ResultsDecoders.single ResultDecoders.pipelineSync) (integerDatetimes, pqConnection)
-      lg $ show r3
+      _r3 <- ResultsDecoders.run (ResultsDecoders.single ResultDecoders.pipelineSync) (integerDatetimes, pqConnection) -- FIXME
       writeIORef pipeline $ PipelineQueued 0
     _ -> return ()
   return $ r1 <* r2
@@ -153,7 +125,6 @@ getResults (PConnection pqConnection pipeline) integerDatetimes decoder = do
       ResultsDecoders.run ResultsDecoders.dropRemainders (integerDatetimes, pqConnection)
 
 sendPrepare connection key template oids = do
-  lg "sendPrepare"
   bumpPipeline connection
   LibPQ.sendPrepare (pcConn connection) key template oids
 
