@@ -38,8 +38,8 @@ release :: Connection -> IO ()
 release (Connection pqConnectionRef _ _) =
   mask_ $ do
     nullConnection <- IO.newNullConnection
-    oldConnection <- swapMVar pqConnectionRef nullConnection
-    IO.releaseConnection oldConnection
+    pqConnection <- swapMVar pqConnectionRef nullConnection
+    IO.releaseConnection pqConnection
 
 -- |
 -- Execute an operation on the raw @libpq@ 'LibPQ.Connection'.
