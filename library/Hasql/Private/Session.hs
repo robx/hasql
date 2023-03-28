@@ -51,7 +51,6 @@ queuePipelineStatement input (Statement.Statement template (Encoders.Params para
       ExceptT $
         fmap (mapLeft (QueryError template inputReps)) $
           withMVar pqConnectionRef $ \pqConnection -> do
-            IO.startPipeline pqConnection -- FIXME
             IO.sendParametricStatement pqConnection integerDatetimes registry template paramsEncoder preparable input
   where
     inputReps =
@@ -69,7 +68,6 @@ statement input (Statement.Statement template (Encoders.Params paramsEncoder) de
           withMVar pqConnectionRef $ \pqConnection -> do
             r1 <- IO.sendParametricStatement pqConnection integerDatetimes registry template paramsEncoder preparable input
             r2 <- IO.getResults pqConnection integerDatetimes (unsafeCoerce decoder)
-            IO.stopPipeline pqConnection
             return $ r1 *> r2
   where
     inputReps =

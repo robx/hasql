@@ -40,6 +40,8 @@ library
     Hasql.Private.Errors
     Hasql.Private.PTI
     Hasql.Private.IO
+    Hasql.Private.IO.Pipeline
+    Hasql.Private.IO.Sync
     Hasql.Private.Session
     Hasql.Private.Connection
     Hasql.Private.PreparedStatementRegistry

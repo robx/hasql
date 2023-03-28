@@ -1,6 +1,20 @@
 -- |
 -- An API of low-level IO operations.
-module Hasql.Private.IO where
+module Hasql.Private.IO
+  ( PConnection
+  , acquireConnection
+  , releaseConnection
+  , newNullConnection
+  , checkConnectionStatus
+  , acquirePreparedStatementRegistry
+  , initConnection
+  , pcConn
+  , getIntegerDatetimes
+  , getResults
+  , sendParametricStatement
+  , sendNonparametricStatement
+  )
+where
 
 import qualified Data.DList as DList
 import qualified Database.PostgreSQL.LibPQ as LibPQ
@@ -12,70 +26,22 @@ import qualified Hasql.Private.Encoders.Params as ParamsEncoders
 import Hasql.Private.Errors
 import Hasql.Private.Prelude
 import qualified Hasql.Private.PreparedStatementRegistry as PreparedStatementRegistry
-
-data Pipeline = PipelineOff | PipelineQueued Int
-
-data PConnection
-  = PConnection { pcConn :: !LibPQ.Connection, pcOutstanding :: !(IORef Pipeline) }
-
-{-# INLINE startPipeline #-}
-startPipeline :: PConnection -> IO ()
-startPipeline (PConnection conn outstanding) = do
-  _rb <- LibPQ.setnonblocking conn True -- FIXME
-  _r <- LibPQ.enterPipelineMode conn -- FIXME
-  modifyIORef outstanding
-    (\p -> case p of PipelineOff -> PipelineQueued 0
-                     _           -> p)
-
-{-# INLINE bumpPipeline #-}
-bumpPipeline :: PConnection -> IO ()
-bumpPipeline (PConnection _ outstanding) = do
-  modifyIORef outstanding
-    (\p -> case p of PipelineOff -> PipelineOff
-                     PipelineQueued n -> PipelineQueued $ n + 1)
-
-stopPipeline :: PConnection -> IO ()
-stopPipeline (PConnection conn pipeline) = do
-  _p <- readIORef pipeline -- FIXME
-  writeIORef pipeline PipelineOff
-  exitPipelineMode conn -- FIXME
-  _rb <- LibPQ.setnonblocking conn False -- FIXME
-  return ()
-
-{-# INLINE newNullConnection #-}
-newNullConnection :: IO PConnection
-newNullConnection = PConnection <$> LibPQ.newNullConnection <*> newIORef PipelineOff
-
-{-# INLINE acquireConnection #-}
-acquireConnection :: ByteString -> IO PConnection
-acquireConnection s = PConnection <$> LibPQ.connectdb s <*> newIORef PipelineOff
+import Hasql.Private.IO.Pipeline
+--import Hasql.Private.IO.Sync
 
 {-# INLINE acquirePreparedStatementRegistry #-}
 acquirePreparedStatementRegistry :: IO PreparedStatementRegistry.PreparedStatementRegistry
 acquirePreparedStatementRegistry =
   PreparedStatementRegistry.new
 
-{-# INLINE releaseConnection #-}
-releaseConnection :: PConnection -> IO ()
-releaseConnection (PConnection connection _) =
-  LibPQ.finish connection
-
 {-# INLINE checkConnectionStatus #-}
 checkConnectionStatus :: PConnection -> IO (Maybe (Maybe ByteString))
-checkConnectionStatus (PConnection c _) =
+checkConnectionStatus conn =
   do
-    s <- LibPQ.status c
+    s <- LibPQ.status $ pcConn conn
     case s of
       LibPQ.ConnectionOk -> return Nothing
-      _ -> fmap Just (LibPQ.errorMessage c)
-
-exitPipelineMode :: LibPQ.Connection -> IO ()
-exitPipelineMode = void . LibPQ.exitPipelineMode
-
-syncPipeline :: LibPQ.Connection -> IO ()
-syncPipeline c = do
-  _r <- LibPQ.pipelineSync c -- FIXME
-  return ()
+      _ -> fmap Just (LibPQ.errorMessage $ pcConn conn)
 
 {-# INLINE checkServerVersion #-}
 checkServerVersion :: LibPQ.Connection -> IO (Maybe Int)
@@ -84,49 +50,13 @@ checkServerVersion c =
 
 {-# INLINE getIntegerDatetimes #-}
 getIntegerDatetimes :: PConnection -> IO Bool
-getIntegerDatetimes (PConnection c _) =
-  fmap decodeValue $ LibPQ.parameterStatus c "integer_datetimes"
+getIntegerDatetimes conn =
+  fmap decodeValue $ LibPQ.parameterStatus (pcConn conn) "integer_datetimes"
   where
     decodeValue =
       \case
         Just "on" -> True
         _ -> False
-
-{-# INLINE initConnection #-}
-initConnection :: PConnection -> IO ()
-initConnection (PConnection c _) =
-  void $ LibPQ.exec c (Commands.asBytes (Commands.setEncodersToUTF8 <> Commands.setMinClientMessagesToWarning))
-
-{-# INLINE getResults #-}
-getResults :: PConnection -> Bool -> ResultsDecoders.Results a -> IO (Either CommandError a)
-getResults (PConnection pqConnection pipeline) integerDatetimes decoder = do
-  p <- readIORef pipeline
-  case p of
-    PipelineQueued nOutstanding -> do
-      syncPipeline pqConnection
-      forM_ [2..nOutstanding] $ \_ -> do
-         _r <- ResultsDecoders.run (unsafeCoerce Decoders.noResult) (integerDatetimes, pqConnection) -- FIXME
-         _r2 <- dropRemainders -- FIXME
-         return ()
-    PipelineOff -> return ()
-
-  r1 <- get
-  r2 <- dropRemainders
-  case p of
-    PipelineQueued _ -> do
-      _r3 <- ResultsDecoders.run (ResultsDecoders.single ResultDecoders.pipelineSync) (integerDatetimes, pqConnection) -- FIXME
-      writeIORef pipeline $ PipelineQueued 0
-    _ -> return ()
-  return $ r1 <* r2
-  where
-    get =
-      ResultsDecoders.run decoder (integerDatetimes, pqConnection)
-    dropRemainders =
-      ResultsDecoders.run ResultsDecoders.dropRemainders (integerDatetimes, pqConnection)
-
-sendPrepare connection key template oids = do
-  bumpPipeline connection
-  LibPQ.sendPrepare (pcConn connection) key template oids
 
 {-# INLINE getPreparedStatementKey #-}
 getPreparedStatementKey ::
@@ -159,14 +89,6 @@ getPreparedStatementKey connection registry template oidList =
             Right _ -> (True, Right key)
     onOldRemoteKey key =
       pure (pure key)
-
-{-# INLINE checkedSend #-}
-checkedSend :: PConnection -> IO Bool -> IO (Either CommandError ())
-checkedSend connection send = do
-  bumpPipeline connection
-  send >>= \case
-    False -> fmap (Left . ClientError) $ LibPQ.errorMessage (pcConn connection)
-    True -> pure (Right ())
 
 {-# INLINE sendPreparedParametricStatement #-}
 sendPreparedParametricStatement ::
