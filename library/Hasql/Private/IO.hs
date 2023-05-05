@@ -144,4 +144,4 @@ sendParametricStatement connection integerDatetimes registry template encoder pr
 {-# INLINE sendNonparametricStatement #-}
 sendNonparametricStatement :: PConnection -> ByteString -> IO (Either CommandError ())
 sendNonparametricStatement connection sql =
-  checkedSend connection $ LibPQ.sendQuery (pcConn connection) sql
+  checkedSend connection $ sendQuery (pcConn connection) sql

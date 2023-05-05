@@ -16,6 +16,9 @@ type PConnection = LibPQ.Connection
 pcConn :: PConnection -> LibPQ.Connection
 pcConn = id
 
+sendQuery :: LibPQ.Connection -> ByteString -> IO Bool
+sendQuery = LibPQ.sendQuery
+
 {-# INLINE newNullConnection #-}
 newNullConnection :: IO PConnection
 newNullConnection = LibPQ.newNullConnection

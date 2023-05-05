@@ -14,6 +14,10 @@ import Hasql.Private.Prelude
 data PConnection
   = PConnection { pcConn :: !LibPQ.Connection, pcOutstanding :: !(IORef Int) }
 
+-- LibPQ.sendQuery doesn't work in pipeline mode
+sendQuery :: LibPQ.Connection -> ByteString -> IO Bool
+sendQuery conn stmt = LibPQ.sendQueryParams conn stmt [] LibPQ.Binary
+
 {-# INLINE bumpPipeline #-}
 bumpPipeline :: PConnection -> IO ()
 bumpPipeline (PConnection _ outstanding) = modifyIORef outstanding (+1)
